@@ -177,48 +177,55 @@ static inline void free_config_ini_entries(HashTable *const ht) {
   ZEND_HASH_FOREACH_END();
 }
 
-static PHP_GSHUTDOWN_FUNCTION(snuffleupagus) {
-  sp_log_debug("(GSHUTDOWN)");
-#define FREE_HT(F)                       \
-  zend_hash_destroy(snuffleupagus_globals->F); \
-  pefree(snuffleupagus_globals->F, 1);
-  FREE_HT(disabled_functions_hook);
-  FREE_HT(sp_eval_blacklist_functions_hook);
+static void sp_cleanup_config(void) {
+  sp_log_debug("Cleaning up configuration");
 
-#define FREE_HT_LIST(F)                                         \
-  free_disabled_functions_hashtable(snuffleupagus_globals->F); \
-  FREE_HT(F);
-  FREE_HT_LIST(config_disabled_functions);
-  FREE_HT_LIST(config_disabled_functions_hooked);
-  FREE_HT_LIST(config_disabled_functions_ret);
-  FREE_HT_LIST(config_disabled_functions_ret_hooked);
-#undef FREE_HT_LIST
+  // Clear hashtables without destroying them (they're persistent and reused)
+#define CLEAR_HT_LIST(F)                                         \
+  free_disabled_functions_hashtable(SPG(F)); \
+  zend_hash_clean(SPG(F));
 
-  free_config_ini_entries(snuffleupagus_globals->config_ini.entries);
-  FREE_HT(config_ini.entries);
-#undef FREE_HT
+  CLEAR_HT_LIST(config_disabled_functions);
+  CLEAR_HT_LIST(config_disabled_functions_hooked);
+  CLEAR_HT_LIST(config_disabled_functions_ret);
+  CLEAR_HT_LIST(config_disabled_functions_ret_hooked);
+#undef CLEAR_HT_LIST
 
-  sp_list_free(snuffleupagus_globals->config_disabled_functions_reg.disabled_functions, sp_free_disabled_function);
-  sp_list_free(snuffleupagus_globals->config_disabled_functions_reg_ret.disabled_functions, sp_free_disabled_function);
-  sp_list_free(snuffleupagus_globals->config_cookie.cookies, sp_free_cookie);
+  free_config_ini_entries(SPG(config_ini.entries));
+  zend_hash_clean(SPG(config_ini.entries));
 
-#define FREE_LST(L) sp_list_free(snuffleupagus_globals->L, sp_free_zstr);
+  sp_list_free(SPG(config_disabled_functions_reg.disabled_functions), sp_free_disabled_function);
+  SPG(config_disabled_functions_reg.disabled_functions) = NULL;
+
+  sp_list_free(SPG(config_disabled_functions_reg_ret.disabled_functions), sp_free_disabled_function);
+  SPG(config_disabled_functions_reg_ret.disabled_functions) = NULL;
+
+  sp_list_free(SPG(config_cookie.cookies), sp_free_cookie);
+  SPG(config_cookie.cookies) = NULL;
+
+#define FREE_LST(L) \
+  sp_list_free(SPG(L), sp_free_zstr); \
+  SPG(L) = NULL;
   FREE_LST(config_eval.blacklist);
   FREE_LST(config_eval.whitelist);
   FREE_LST(config_wrapper.whitelist);
   FREE_LST(config_wrapper.php_stream_allowlist);
 #undef FREE_LST
 
-
-// #define FREE_CFG(C) pefree(snuffleupagus_globals->config.C, 1);
-#define FREE_CFG_ZSTR(C) sp_free_zstr(snuffleupagus_globals->C);
+#define FREE_CFG_ZSTR(C) \
+  sp_free_zstr(SPG(C)); \
+  SPG(C) = NULL;
   FREE_CFG_ZSTR(config_unserialize.dump);
   FREE_CFG_ZSTR(config_unserialize.textual_representation);
   FREE_CFG_ZSTR(config_upload_validation.script);
   FREE_CFG_ZSTR(config_eval.dump);
   FREE_CFG_ZSTR(config_eval.textual_representation);
-// #undef FREE_CFG
 #undef FREE_CFG_ZSTR
+}
+
+static PHP_GSHUTDOWN_FUNCTION(snuffleupagus) {
+  sp_log_debug("(GSHUTDOWN)");
+  sp_cleanup_config();
 
 #ifdef SP_DEBUG_STDERR
   if (sp_debug_stderr >= 0) {
@@ -533,6 +540,11 @@ static PHP_INI_MH(OnUpdateConfiguration) {
 
   if (!new_value || !new_value->len) {
     return FAILURE;
+  }
+
+  // Reset if config was previously loaded
+  if (SPG(is_config_valid) != SP_CONFIG_NONE) {
+    sp_cleanup_config();
   }
 
   // set some defaults
